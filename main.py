@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from apis import auth
 from core.database import engine, Base
+from apis import websocket
 
 app=FastAPI()
 
@@ -10,3 +11,5 @@ Base.metadata.create_all(bind=engine)
 # Endpoints
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
+
+app.include_router(websocket.router, tags=["websockets"])
