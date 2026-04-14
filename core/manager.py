@@ -1,8 +1,10 @@
 import asyncio
+import json
 from collections import defaultdict
 from typing import DefaultDict, Dict, Set
-
+import redis.asyncio as redis
 from fastapi import WebSocket
+from core.config import REDIS_CHANNEL, REDIS_URL
 
 
 class ConnectionManager:
@@ -12,6 +14,11 @@ class ConnectionManager:
         # socket object id -> user_id (allows removing exact disconnected socket)
         self.socket_to_user: Dict[int, int] = {}
         self._lock = asyncio.Lock()
+
+        # Redis Settings
+        self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        self.pubsub = self.redis_client.pubsub() # -> Publisher Subscriber
+        self.channel = REDIS_CHANNEL
 
     async def connect(self, user_id: int, websocket: WebSocket):
         await websocket.accept()
@@ -34,7 +41,7 @@ class ConnectionManager:
             if not sockets:
                 self.active_connections.pop(user_id, None)
 
-    async def broadcast(self, message: str, sender_user_id: int):
+    async def _local_broadcast(self, message: str, sender_user_id: int = None):
         async with self._lock:
             sockets = [
                 ws
@@ -43,15 +50,30 @@ class ConnectionManager:
                 for ws in user_sockets
             ]
 
-        dead_sockets = []
         for connection in sockets:
             try:
                 await connection.send_text(message)
             except Exception:
-                dead_sockets.append(connection)
+                asyncio.create_task(self.disconnect(connection))
 
-        for ws in dead_sockets:
-            await self.disconnect(ws)
+    async def broadcast(self, message: str, sender_id: int = None):
+        payload = {
+            "message": message,
+            "sender_id": sender_id
+        }
+        await self.redis_client.publish(self.channel, json.dumps(payload))
 
+    async def listen_to_redis(self):
+        await self.pubsub.subscribe(self.channel)
+        try:
+            async for message in self.pubsub.listen():
+                if message['type'] == 'message':
+                    data = json.loads(message['data'])
+                    await self._local_broadcast(
+                        message=data['message'],
+                        sender_user_id=data.get('sender_id')
+                    )
+        except Exception as e:
+            print(f"Redis Listen Error: {e}")
 
 manager = ConnectionManager()
