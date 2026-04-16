@@ -13,3 +13,8 @@ class UserOut(BaseModel):
     email: EmailStr
     is_active: bool
 
+
+class UserPresenceStatus(BaseModel):
+    user_id: int
+    is_online: bool
+

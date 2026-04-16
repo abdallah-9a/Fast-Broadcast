@@ -19,6 +19,10 @@ class ConnectionManager:
         self.redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         self.pubsub = self.redis_client.pubsub() # -> Publisher Subscriber
         self.channel = REDIS_CHANNEL
+        self.online_users_key = "presence:online_users"
+
+    def _user_connections_key(self, user_id: int) -> str:
+        return f"presence:user:{user_id}:connections"
 
     async def connect(self, user_id: int, websocket: WebSocket):
         await websocket.accept()
@@ -62,6 +66,31 @@ class ConnectionManager:
             "sender_id": sender_id
         }
         await self.redis_client.publish(self.channel, json.dumps(payload))
+
+    async def mark_user_online(self, user_id: int):
+        connections_key = self._user_connections_key(user_id)
+        await self.redis_client.incr(connections_key)
+        await self.redis_client.sadd(self.online_users_key, user_id)
+
+    async def mark_user_offline(self, user_id: int):
+        connections_key = self._user_connections_key(user_id)
+        count = await self.redis_client.decr(connections_key)
+        if count <= 0:
+            await self.redis_client.delete(connections_key)
+            await self.redis_client.srem(self.online_users_key, user_id)
+
+    async def is_user_online(self, user_id: int) -> bool:
+        return await self.redis_client.sismember(self.online_users_key, user_id)
+
+    async def get_online_user_ids(self) -> list[int]:
+        raw_user_ids = await self.redis_client.smembers(self.online_users_key)
+        valid_user_ids = []
+        for raw_id in raw_user_ids:
+            try:
+                valid_user_ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                continue
+        return sorted(valid_user_ids)
 
     async def listen_to_redis(self):
         await self.pubsub.subscribe(self.channel)
