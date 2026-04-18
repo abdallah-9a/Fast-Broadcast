@@ -1,4 +1,5 @@
-from fastapi import WebSocket, status
+from fastapi import Depends, HTTPException, WebSocket, status
+from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from datetime import datetime, timedelta
@@ -7,6 +8,7 @@ from models.user import User
 from core.database import SessionLocal
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 def get_password_hash(password: str):
     return pwd_context.hash(password)
@@ -22,6 +24,39 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+def _decode_token_user_id(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return int(payload.get("sub"))
+    except (JWTError, ValueError, TypeError):
+        return None
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    user_id = _decode_token_user_id(token)
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+    finally:
+        db.close()
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
     
 
 def _extract_ws_token(websocket: WebSocket):
@@ -38,10 +73,8 @@ async def get_current_user_ws(websocket: WebSocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return None
 
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = int(payload.get("sub"))
-    except (JWTError, ValueError, TypeError):
+    user_id = _decode_token_user_id(token)
+    if user_id is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return None
 
