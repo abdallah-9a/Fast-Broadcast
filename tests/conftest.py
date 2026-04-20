@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.database import Base, get_db
 from core.manager import manager
 import core.security as security
+import apis.websocket as websocket_api
 from main import app
 
 
@@ -53,7 +54,7 @@ def client(monkeypatch: pytest.MonkeyPatch, testing_session_local):
         except asyncio.CancelledError:
             return
 
-    async def fake_broadcast(message: str, sender_id: int = None):
+    async def fake_broadcast(event: dict, sender_id: int = None, room_id: int | None = None):
         return None
 
     async def fake_mark_user_online(user_id: int):
@@ -70,6 +71,7 @@ def client(monkeypatch: pytest.MonkeyPatch, testing_session_local):
 
     app.dependency_overrides[get_db] = override_get_db
     monkeypatch.setattr(security, "SessionLocal", testing_session_local)
+    monkeypatch.setattr(websocket_api, "SessionLocal", testing_session_local)
     monkeypatch.setattr(manager, "listen_to_redis", fake_listen_to_redis)
     monkeypatch.setattr(manager, "broadcast", fake_broadcast)
     monkeypatch.setattr(manager, "mark_user_online", fake_mark_user_online)
@@ -79,6 +81,8 @@ def client(monkeypatch: pytest.MonkeyPatch, testing_session_local):
 
     manager.active_connections.clear()
     manager.socket_to_user.clear()
+    manager.room_connections.clear()
+    manager.socket_rooms.clear()
     online_user_ids.clear()
 
     with TestClient(app) as test_client:
@@ -87,4 +91,6 @@ def client(monkeypatch: pytest.MonkeyPatch, testing_session_local):
     app.dependency_overrides.clear()
     manager.active_connections.clear()
     manager.socket_to_user.clear()
+    manager.room_connections.clear()
+    manager.socket_rooms.clear()
     online_user_ids.clear()
