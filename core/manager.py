@@ -32,6 +32,9 @@ class ConnectionManager:
     def _user_connections_key(self, user_id: int) -> str:
         return f"presence:user:{user_id}:connections"
 
+    def _room_online_users_key(self, room_id: int) -> str:
+        return f"presence:room:{room_id}:online_users"
+
     async def connect(self, user_id: int, websocket: WebSocket):
         await websocket.accept()
         async with self._lock:
@@ -66,6 +69,9 @@ class ConnectionManager:
                 room_sockets.discard(websocket)
                 if not room_sockets:
                     self.room_connections.pop(room_id, None)
+                    # Remove user from room presence when last socket leaves
+                    room_online_key = self._room_online_users_key(room_id)
+                    await self.redis_client.srem(room_online_key, user_id)
 
     async def join_room(self, room_id: int, websocket: WebSocket):
         async with self._lock:
@@ -73,8 +79,16 @@ class ConnectionManager:
             if socket_id not in self.socket_to_user:
                 return
 
+            user_id = self.socket_to_user[socket_id]
+            was_in_room = socket_id in self.socket_rooms and room_id in self.socket_rooms[socket_id]
+            
             self.room_connections[room_id].add(websocket)
             self.socket_rooms.setdefault(socket_id, set()).add(room_id)
+            
+            # Add user to room presence only on first join from this socket
+            if not was_in_room:
+                room_online_key = self._room_online_users_key(room_id)
+                await self.redis_client.sadd(room_online_key, user_id)
 
     async def leave_room(self, room_id: int, websocket: WebSocket):
         async with self._lock:
@@ -88,6 +102,11 @@ class ConnectionManager:
             if room_sockets is not None:
                 room_sockets.discard(websocket)
                 if not room_sockets:
+                    # Remove user from room presence when last socket leaves
+                    user_id = self.socket_to_user.get(socket_id)
+                    if user_id is not None:
+                        room_online_key = self._room_online_users_key(room_id)
+                        await self.redis_client.srem(room_online_key, user_id)
                     self.room_connections.pop(room_id, None)
 
     async def is_socket_in_room(self, room_id: int, websocket: WebSocket) -> bool:
@@ -136,6 +155,18 @@ class ConnectionManager:
 
     async def get_online_user_ids(self) -> list[int]:
         raw_user_ids = await self.redis_client.smembers(self.online_users_key)
+        valid_user_ids = []
+        for raw_id in raw_user_ids:
+            try:
+                valid_user_ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                continue
+        return sorted(valid_user_ids)
+
+    async def get_room_online_user_ids(self, room_id: int) -> list[int]:
+        """Get sorted list of user IDs currently online in a specific room."""
+        room_online_key = self._room_online_users_key(room_id)
+        raw_user_ids = await self.redis_client.smembers(room_online_key)
         valid_user_ids = []
         for raw_id in raw_user_ids:
             try:

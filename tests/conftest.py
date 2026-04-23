@@ -39,6 +39,7 @@ def testing_session_local():
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch, testing_session_local):
     online_user_ids: set[int] = set()
+    room_online_users: dict[int, set[int]] = {}  # room_id -> set of online user_ids
 
     def override_get_db():
         db = testing_session_local()
@@ -69,6 +70,33 @@ def client(monkeypatch: pytest.MonkeyPatch, testing_session_local):
     async def fake_get_online_user_ids() -> list[int]:
         return sorted(online_user_ids)
 
+    async def fake_get_room_online_user_ids(room_id: int) -> list[int]:
+        return sorted(room_online_users.get(room_id, set()))
+
+    # Mock redis_client.sadd and srem for room presence tracking
+    async def fake_redis_sadd(key: str, *values):
+        if key.startswith("presence:room:"):
+            room_id = int(key.split(":")[2])
+            if room_id not in room_online_users:
+                room_online_users[room_id] = set()
+            for val in values:
+                room_online_users[room_id].add(int(val))
+        return len(values)
+
+    async def fake_redis_srem(key: str, *values):
+        if key.startswith("presence:room:"):
+            room_id = int(key.split(":")[2])
+            if room_id in room_online_users:
+                for val in values:
+                    room_online_users[room_id].discard(int(val))
+        return len(values)
+
+    async def fake_redis_smembers(key: str):
+        if key.startswith("presence:room:"):
+            room_id = int(key.split(":")[2])
+            return list(str(uid) for uid in room_online_users.get(room_id, set()))
+        return []
+
     app.dependency_overrides[get_db] = override_get_db
     monkeypatch.setattr(security, "SessionLocal", testing_session_local)
     monkeypatch.setattr(websocket_api, "SessionLocal", testing_session_local)
@@ -78,12 +106,17 @@ def client(monkeypatch: pytest.MonkeyPatch, testing_session_local):
     monkeypatch.setattr(manager, "mark_user_offline", fake_mark_user_offline)
     monkeypatch.setattr(manager, "is_user_online", fake_is_user_online)
     monkeypatch.setattr(manager, "get_online_user_ids", fake_get_online_user_ids)
+    monkeypatch.setattr(manager, "get_room_online_user_ids", fake_get_room_online_user_ids)
+    monkeypatch.setattr(manager.redis_client, "sadd", fake_redis_sadd)
+    monkeypatch.setattr(manager.redis_client, "srem", fake_redis_srem)
+    monkeypatch.setattr(manager.redis_client, "smembers", fake_redis_smembers)
 
     manager.active_connections.clear()
     manager.socket_to_user.clear()
     manager.room_connections.clear()
     manager.socket_rooms.clear()
     online_user_ids.clear()
+    room_online_users.clear()
 
     with TestClient(app) as test_client:
         yield test_client
@@ -94,3 +127,4 @@ def client(monkeypatch: pytest.MonkeyPatch, testing_session_local):
     manager.room_connections.clear()
     manager.socket_rooms.clear()
     online_user_ids.clear()
+    room_online_users.clear()

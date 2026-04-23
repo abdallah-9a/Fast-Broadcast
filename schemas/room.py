@@ -50,6 +50,24 @@ class RoomMemberOut(BaseModel):
     last_read_at: datetime | None
 
 
+class RoomUserPresenceOut(BaseModel):
+    user_id: int
+    username: str
+    is_online: bool
+
+
+class RoomOnlineUsersOut(BaseModel):
+    room_id: int
+    online_users: list[RoomUserPresenceOut]
+
+
+class RoomUserOnlineStatusOut(BaseModel):
+    room_id: int
+    user_id: int
+    username: str
+    is_online: bool
+
+
 class RoomJoinRequest(BaseModel):
     pass
 

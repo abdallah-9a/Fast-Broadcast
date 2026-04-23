@@ -183,6 +183,30 @@ async def websocket_endpoint(
                     db.close()
 
                 await manager.join_room(room_id, websocket)
+                
+                # Send presence update to the joining user
+                room_online_user_ids = await manager.get_room_online_user_ids(room_id)
+                db = SessionLocal()
+                try:
+                    online_users = db.query(User).filter(User.id.in_(room_online_user_ids)).all() if room_online_user_ids else []
+                    presence_payload = {
+                        "online_users": [
+                            {"user_id": u.id, "username": u.username}
+                            for u in online_users
+                        ]
+                    }
+                finally:
+                    db.close()
+                
+                await websocket.send_json(
+                    _build_room_event(
+                        event_type="room.presence_update",
+                        room_id=room_id,
+                        user=user,
+                        payload=presence_payload,
+                    )
+                )
+                
                 await manager.broadcast(
                     _build_room_event(
                         event_type="room.join",

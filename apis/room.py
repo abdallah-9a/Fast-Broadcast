@@ -6,10 +6,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.database import get_db
+from core.manager import manager
 from core.security import get_current_user
 from models.room import Room, RoomMember, RoomMemberRole, RoomVisibility
 from models.user import User
-from schemas.room import RoomCreate, RoomMemberOut, RoomOut
+from schemas.room import (
+    RoomCreate,
+    RoomMemberOut,
+    RoomOnlineUsersOut,
+    RoomOut,
+    RoomUserOnlineStatusOut,
+    RoomUserPresenceOut,
+)
 
 router = APIRouter()
 
@@ -35,6 +43,13 @@ def _get_active_membership(db: Session, room_id: int, user_id: int):
         )
         .first()
     )
+
+
+def _ensure_room_access(db: Session, room: Room, current_user: User):
+    if room.visibility == RoomVisibility.PRIVATE.value:
+        membership = _get_active_membership(db, room.id, current_user.id)
+        if membership is None:
+            raise HTTPException(status_code=403, detail="You are not allowed to access this room")
 
 
 @router.post("", response_model=RoomOut, status_code=status.HTTP_201_CREATED)
@@ -202,3 +217,55 @@ def list_room_members(
         .all()
     )
     return members
+
+
+@router.get("/{room_id}/online-users", response_model=RoomOnlineUsersOut)
+async def list_room_online_users(
+    room_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    room = _get_active_room(db, room_id)
+    _ensure_room_access(db, room, current_user)
+
+    online_user_ids = await manager.get_room_online_user_ids(room_id)
+    if not online_user_ids:
+        return {"room_id": room_id, "online_users": []}
+
+    users = db.query(User).filter(User.id.in_(online_user_ids)).all()
+    users_by_id = {user.id: user for user in users}
+
+    return {
+        "room_id": room_id,
+        "online_users": [
+            {
+                "user_id": user_id,
+                "username": users_by_id[user_id].username,
+                "is_online": True,
+            }
+            for user_id in online_user_ids
+            if user_id in users_by_id
+        ],
+    }
+
+
+@router.get("/{room_id}/users/{user_id}/online", response_model=RoomUserOnlineStatusOut)
+async def get_room_user_online_status(
+    room_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    room = _get_active_room(db, room_id)
+    _ensure_room_access(db, room, current_user)
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "room_id": room_id,
+        "user_id": user_id,
+        "username": user.username,
+        "is_online": user_id in set(await manager.get_room_online_user_ids(room_id)),
+    }
